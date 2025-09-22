@@ -1,0 +1,16 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    working_dir: /app
+    volumes:
+      - ./:/app                 # codi en hot-reload
+      - venv:/venv              # venv persistent (no reinstal·lar cada cop)
+      - pip-cache:/root/.cache/pip  # cache de pip per accelerar
+    tty: true
+    command: bash     # o bash, uvicorn, flask, etc.
+
+volumes:
+  venv:
+  pip-cache:
