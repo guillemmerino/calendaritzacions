@@ -150,12 +150,12 @@ def processar_dades_2(df):
 
         try:
             # Pots ajustar max_grup/min_grup i pesos segons necessitats
-            res_df, info = assignar_grups_hungares(
+            res_df, entity_costs, info = assignar_grups_hungares(
                 df_cat,
                 max_grup=8,
                 min_grup=6,
                 entity_costs=entity_costs,
-                weights={'w_dif_sorteig': 3}
+                weights={'w_dif_sorteig': np.log2(27)}
             )
         except ValueError as e:
             # p.ex. una entitat té més equips que grups (no factible separar)
