@@ -3,7 +3,7 @@ import numpy as np
 from collections import defaultdict, Counter
 import sys
 from math import log2
-
+import unicodedata, hashlib
 
 from scipy.optimize import linear_sum_assignment
 SCIPY_OK = True
@@ -42,7 +42,8 @@ def crear_grups_equilibrats(num_equips, max_grup=8, min_grup=6):
         base = num_equips // num_grups
         sobra = num_equips % num_grups
         grups = [base + 1 if i < sobra else base for i in range(num_grups)]
-        if max(grups) <= max_grup and min(grups) >= min_grup or num_grups >= num_equips:
+        # Acceptem si complim el màxim; el mínim és desitjable però no forçat
+        if max(grups) <= max_grup:
             return grups
         num_grups += 1
 
@@ -113,7 +114,7 @@ def cost_calc(seed, g, p, disposicions, fase, w_dif_sorteig=3):
         match = disposicions[p]
         difs = sum(a != b for a, b in zip(seed_matches, match))
 
-        cost += w_dif_sorteig ** difs
+        cost += (1 + difs)**w_dif_sorteig
     #print(f"Seed: {seed}, Grup: {g}, Posició: {p}, Cost: {cost}, Difs: {difs}")
     return cost
 
@@ -281,7 +282,9 @@ def level_entropy(nivells):
     for i, n1 in enumerate(nums):
         for j, n2 in enumerate(nums):
             if j > i and n1 != n2:
-                entropia += 3**(abs(n1 - n2))
+                if abs(n1 - n2) > 3:
+                    entropia += 3**(abs(n1 - n2))
+                #entropia += 3**(abs(n1 - n2))
     return entropia
 
 def day_entropy(dies):
@@ -458,7 +461,7 @@ def normalize_seed_value(x):
 
 
 # --- Afegir penalització per mala distribució de dummies ---
-def homogeneitzar_costs(df_cat, groups, C, entity_costs, slots,
+def homogeneitzar_costs(df_cat, groups, C, entity_costs, entitats_casa_fora,slots,
                                fase=primera_fase,
                                w_dif_sorteig=5,
                                lambda_entropia=1.0,
@@ -563,7 +566,6 @@ def homogeneitzar_costs(df_cat, groups, C, entity_costs, slots,
     grups_ids_ordenats = sorted(groups.keys())
 
     for _ in range(max_iters):
-        millora = False
         for i_g, g1 in enumerate(grups_ids_ordenats):
             for g2 in grups_ids_ordenats[i_g:]:
                 
@@ -583,10 +585,22 @@ def homogeneitzar_costs(df_cat, groups, C, entity_costs, slots,
                     ent2 = df_cat.iloc[e2]['Entitat']
                     ents_g1_rest = [df_cat.iloc[idx]['Entitat'] for pos, idx in groups[g1].items() if pos != p1]
                     ents_g2_rest = [df_cat.iloc[idx]['Entitat'] for pos, idx in groups[g2].items() if pos != p2]
-                    if ent2 != 'Dummy' and ent2 in ents_g1_rest:
+
+                    # Si algun equip pertany a entitats_casa_fora, només es permet swap si mantenen el mateix número (posició)
+                    if (ent1 in entitats_casa_fora or ent2 in entitats_casa_fora) and p1 != p2:
                         continue
-                    if ent1 != 'Dummy' and ent1 in ents_g2_rest:
-                        continue
+
+                    if p1 == p2:
+                        if (ent2 != 'Dummy') and (ent2 in ents_g1_rest):
+                            continue
+                        if (ent1 != 'Dummy') and (ent1 in ents_g2_rest):
+                            continue
+                    else:
+                        # Comprova que el swap no genera conflicte d'entitat
+                        if (ent2 != 'Dummy') and (ent2 in ents_g1_rest or ent2 in entitats_casa_fora):
+                            continue
+                        if (ent1 != 'Dummy') and (ent1 in ents_g2_rest or ent1 in entitats_casa_fora):
+                            continue
 
                     # Cost actual
                     cost1_cur = cost_equip_slot(e1, g1, p1)
@@ -656,7 +670,6 @@ def homogeneitzar_costs(df_cat, groups, C, entity_costs, slots,
                         if ent1 == 'Dummy' or ent2 == 'Dummy':
                             d_counts = d_counts_new
                             d_penalty = d_penalty_new
-                        millora = True
                         if update_entity_costs:
                             old_factors = dict(entitat_factor)
                             entity_costs = recompute_entity_costs_from_groups(df_cat, groups, C)
@@ -681,7 +694,9 @@ def homogeneitzar_costs(df_cat, groups, C, entity_costs, slots,
                         i_equ2 = groups[g1][posicions[b]]
                         p1, p2 = posicions[a], posicions[b]
                         e1, e2 = groups[g1][p1], groups[g1][p2]
-                        if e1 == e2:
+                        ent1_ent = df_cat.iloc[e1]['Entitat']
+                        ent2_ent = df_cat.iloc[e2]['Entitat']
+                        if e1 == e2 or ent1_ent in entitats_casa_fora or ent2_ent in entitats_casa_fora:
                             continue
                         cost_cur = cost_equip_slot(e1, g1, p1) + cost_equip_slot(e2, g1, p2)
                         cost_new = cost_equip_slot(e1, g1, p2) + cost_equip_slot(e2, g1, p1)
@@ -777,11 +792,22 @@ def actualitzar_costos_entitat(entity_costs, df_cat, C, row_ind, col_ind):
 
     return costos_actualitzats
 
+def _normalize_entity_name(name: str) -> str:
+    # treu variacions d’accents/espais/majús-minus
+    s = unicodedata.normalize('NFKC', str(name)).casefold().strip()
+    s = " ".join(s.split())  # col·lapsa espais múltiples
+    return s
 
+def stable_slot_for_entity(entity_name: str, home_slots) -> int:
+    key = _normalize_entity_name(entity_name)
+    # hash estable independent de la sessió de Python
+    h = hashlib.sha1(key.encode('utf-8')).hexdigest()
+    num = int(h, 16)
+    return home_slots[num % len(home_slots)]
 
 # ---------- FUNCIÓ PRINCIPAL ----------
 
-def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=None, weights=None):
+def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=None, entitats_casa=None, entitats_fora=None, weights=None):
     """
     df_categoria ha de tenir com a mínim:
       - 'Nom', 'Nom Lliga', 'Núm. sorteig'
@@ -838,11 +864,100 @@ def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=N
 
     groups = build_groups_from_assignment(df_cat, slots, col_ind)
     
+    # Un cop resolts els conflictes, tractem els casos casa/fora. Aquí hem d'assignar
+    # un numero de sorteig de "casa" a les entitats que ho hagin demanat, sempre el mateix.
+    contraris = {1:5, 2:6, 3:7, 4:8, 5:1, 6:2, 7:3, 8:4}
+
+    if entitats_casa:
+
+        # Per cada entitat de la llista d'entitats_casa
+        for entitat in entitats_casa.keys():
+
+            slot_casa = entitats_casa[entitat]
+            # Assignem aquest slot a cada equip de l'entitat que ha demanat "casa"
+            for g, pos_dict in groups.items():
+                for p, i_equ in pos_dict.items():
+                    ent = df_cat.iloc[i_equ]['Entitat']
+                    if ent == entitat:
+                        raw = df_cat.iloc[i_equ]['Núm. sorteig']
+                        if str(raw).strip().lower() == "casa":
+                            # Si l'equip ha demanat "casa", li assignem el slot de casa
+                            if (p + 1) != slot_casa:
+                                # Cal fer swap amb qui tingui aquest slot
+                                target_pos = None
+                                for p2, i_equ2 in pos_dict.items():
+                                    if (p2 + 1) == slot_casa:
+                                        target_pos = p2
+                                        break
+                                if target_pos is not None:
+                                    # Fem swap dins del mateix grup
+                                    groups[g][p], groups[g][target_pos] = groups[g][target_pos], groups[g][p]
+
+                        # Si l'equip ha demanat "fora", li assignem un slot de fora
+                        elif str(raw).strip().lower() == "fora":
+                            # Si l'equip ha demanat "fora", li assignem el slot contrari
+                            contrari_slot = contraris[slot_casa]
+                            if (p + 1) != contrari_slot:
+                                # Cal fer swap amb qui tingui aquest slot
+                                target_pos = None
+                                for p2, i_equ2 in pos_dict.items():
+                                    if (p2 + 1) == contrari_slot:
+                                        target_pos = p2
+                                        break
+                                if target_pos is not None:
+                                    # Fem swap dins del mateix grup
+                                    groups[g][p], groups[g][target_pos] = groups[g][target_pos], groups[g][p]
+
+    if entitats_fora:
+        for entitat in entitats_fora.keys():
+            slot_fora = entitats_fora[entitat]
+            # Si l'equip està també a entitats_casa, ignorem aquesta assignació
+            if entitat in entitats_casa:
+                continue
+
+            contrari_slot = contraris[slot_fora]
+            # Assignem aquest slot a cada equip de l'entitat que ha demanat "fora"
+            for g, pos_dict in groups.items():
+                for p, i_equ in pos_dict.items():
+                    ent = df_cat.iloc[i_equ]['Entitat']
+                    if ent == entitat:
+                        raw = df_cat.iloc[i_equ]['Núm. sorteig']
+                        if str(raw).strip().lower() == "fora":
+                            # Si l'equip ha demanat "fora", li assignem el slot de fora
+                            if (p + 1) != slot_fora:
+                                # Cal fer swap amb qui tingui aquest slot
+                                target_pos = None
+                                for p2, i_equ2 in pos_dict.items():
+                                    if (p2 + 1) == slot_fora:
+                                        target_pos = p2
+                                        break
+                                if target_pos is not None:
+                                    # Fem swap dins del mateix grup
+                                    groups[g][p], groups[g][target_pos] = groups[g][target_pos], groups[g][p]
+
+                        elif str(raw).strip().lower() == "casa":
+                            # Si l'equip ha demanat "casa", li assignem el slot contrari
+                            if (p + 1) != contrari_slot:
+                                # Cal fer swap amb qui tingui aquest slot
+                                target_pos = None
+                                for p2, i_equ2 in pos_dict.items():
+                                    if (p2 + 1) == contrari_slot:
+                                        target_pos = p2
+                                        break
+                                if target_pos is not None:
+                                    # Fem swap dins del mateix grup
+                                    groups[g][p], groups[g][target_pos] = groups[g][target_pos], groups[g][p]
+    
     # Actualitzem els cost de les entitats segons l'assignació final
+    entitats_casa_fora = set()
+    if entitats_casa:
+        entitats_casa_fora |= set(entitats_casa.keys() if isinstance(entitats_casa, dict) else entitats_casa)
+    if entitats_fora:
+        entitats_casa_fora |= set(entitats_fora.keys() if isinstance(entitats_fora, dict) else entitats_fora)
 
     groups = homogeneitzar_nivell(df_cat, groups)
     entity_costs = actualitzar_costos_entitat(entity_costs, df_cat, C, row_ind, col_ind)
-    groups, _ = homogeneitzar_costs(df_cat, groups, C, entity_costs,slots, w_dif_sorteig=5, lambda_entropia=1.0, max_iters=3)
+    groups, _ = homogeneitzar_costs(df_cat, groups, C, entity_costs, entitats_casa_fora, slots, w_dif_sorteig=5, lambda_entropia=1.0, max_iters=3)
     entity_costs = actualitzar_costos_entitat(entity_costs, df_cat, C, row_ind, col_ind)
 
     

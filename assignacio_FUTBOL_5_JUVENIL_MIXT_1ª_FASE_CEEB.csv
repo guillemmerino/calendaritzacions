@@ -1,0 +1,9 @@
+﻿Nom Lliga,Grup,Nom,Entitat,Nivell,Dia partit,Núm. sorteig,Núm. sorteig assignat,Diferències jornades
+FUTBOL 5 JUVENIL MIXT 1ª FASE CEEB,G1,"Lycée Français de Gavà (Bon Soleil) ""A""",Lycée Français de Gavà (Bon Soleil),Nivell A,Divendres,Casa,1,[]
+FUTBOL 5 JUVENIL MIXT 1ª FASE CEEB,G1,Dummy 1,Dummy,Dummy,,,2,[]
+FUTBOL 5 JUVENIL MIXT 1ª FASE CEEB,G1,"Fundació Brafa ""B""",Fundació Brafa,Nivell D,Dissabte,Fora,3,[]
+FUTBOL 5 JUVENIL MIXT 1ª FASE CEEB,G1,"Institut Ernest Lluch (AE L'Eixample) ""A""",Institut Ernest Lluch (AE L'Eixample),Nivell C,Divendres,4,4,[]
+FUTBOL 5 JUVENIL MIXT 1ª FASE CEEB,G1,"Institut Ernest Lluch (AE L'Eixample) ""B""",Institut Ernest Lluch (AE L'Eixample),Nivell C,Divendres,4,5,"[6, 7]"
+FUTBOL 5 JUVENIL MIXT 1ª FASE CEEB,G1,"Artós Sports Club (FPC CET 10) ""A""",Artós Sports Club (FPC CET 10),Nivell A,Dissabte,1,6,"[3, 4, 5, 6, 7]"
+FUTBOL 5 JUVENIL MIXT 1ª FASE CEEB,G1,"Fundació Brafa ""A""",Fundació Brafa,Nivell C,Dissabte,Casa,7,[]
+FUTBOL 5 JUVENIL MIXT 1ª FASE CEEB,G1,"OAK House British School ""A""",OAK House British School,Nivell C,Divendres,1,8,"[6, 7]"

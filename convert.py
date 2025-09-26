@@ -16,5 +16,5 @@ def xlsx_to_csv(xlsx_path):
         print(f"Error al convertir el archivo: {e}")
 
 if __name__ == "__main__":
-    path = "./csv/grups_voleibol.xlsx"
+    path = "./csv/LlistatEquips.xlsx"
     xlsx_to_csv(path)
