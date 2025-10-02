@@ -73,49 +73,70 @@ primera_fase = [
 ] 
 
 
-def cost_calc(seed, g, p, disposicions, fase, w_dif_sorteig=3):
+def cost_calc(equip, seed, g, p, disposicions, equips_to_num_sorteig, fase, w_dif_sorteig=3):
+    """
+    Calcula el cost per situar l'equip en el slot (g,p) segons el seu número preferit/sol·licitat.
+    - Si el seed és "casa"/"fora", s'utilitza equips_to_num_sorteig[equip] per obtenir el número concret (1..8).
+    - Si el seed és un enter 1..8, s'utilitza directament.
+    - Si no hi ha seed vàlid, el cost és 0 (no es biaixa la posició).
+    El cost base és (1 + diferències_pattern)^w_dif_sorteig, on diferències_pattern és el nombre de diferències
+    entre la seqüència casa/fora del número preferit i la de la posició p.
+    """
 
-    preferits_casa = {8, 6, 7, 1}
-    preferits_fora = {5, 4, 3, 2}
-    cost = 0.
-    difs = 0
+    cost = 0.0
 
-    if pd.isna(seed):
-        cost = 0.0
-    elif type(seed) == str and seed.strip().lower() == "fora":
-        # p comença a 0, així que sumem 1 per comparar amb els valors preferits
-        difs = 1
+    # Normalitza seed
+    seed_norm = normalize_seed_value(seed)
+    if pd.isna(seed_norm):
+        seed_norm = None
+    elif isinstance(seed_norm, str) and seed_norm in ("casa", "fora"):
+        # Mapegem al número escollit prèviament per l'equip
+        mapped = equips_to_num_sorteig.get(equip, None)
+        if mapped is None:
+            print ("Atenció 1: ", equip, seed)
+            sys.exit("No hi ha mapping vàlid per a l'equip")
+        # Verifiquem que seed_norm està dins dels valors valids per casa o fora
+        if seed_norm == "casa" and mapped not in [8,7,6,1]:
+            print ("Atenció 2: ", equip, seed)
+            sys.exit("No hi ha número vàlid per a l'equip")
+        elif seed_norm == "fora" and mapped not in [5,4,3,2]:
+            print ("Atenció 3: ", equip, seed)
+            sys.exit("No hi ha número vàlid per a l'equip")
 
-        if (p + 1) in preferits_fora:
-            cost = 0.0
-        else:
-            cost = 1.0  # Penalització alta per la resta
+        seed_norm = int(mapped)
 
-    elif type(seed) == str and seed.strip().lower() == "casa":
-        difs = 1
-
-        if (p + 1) in preferits_casa:
-            cost = 0.0
-        else:
-            cost = 1.0
-    
+        if seed_norm is None:
+            print ("Atenció: ", equip, seed)
+            sys.exit("No hi ha número vàlid per a l'equip")
+            
+        cost += -10.0  # Petita bonificació per demanar casa/fora
     else:
-        # Trobem la disposició casa, fora del seed
-        seed_matches = []                
-        for jornada in fase:
-            for partit in jornada:
-                # Revisem el seed
-                if partit[0] == seed:
-                    seed_matches.append("casa")
-                if partit[1] == seed:
-                    seed_matches.append("fora")
-                                
+        try:
+            seed_int = int(seed_norm)
+            if 1 <= seed_int <= 8:
+                seed_norm = seed_int
+        except Exception:
+            seed_norm = None
 
-        match = disposicions[p]
-        difs = sum(a != b for a, b in zip(seed_matches, match))
+    # Si no hi ha número vàlid, no apliquem cap biaix
+    if seed_norm is None:
+        return 0.0
 
-        cost += (1 + difs)**w_dif_sorteig
-    #print(f"Seed: {seed}, Grup: {g}, Posició: {p}, Cost: {cost}, Difs: {difs}")
+    # Construïm la seqüència de casa/fora del número preferit
+    seed_matches = []
+    for jornada in fase:
+        for partit in jornada:
+            if partit[0] == seed_norm:
+                seed_matches.append("casa")
+            if partit[1] == seed_norm:
+                seed_matches.append("fora")
+
+    # Seqüència del slot p (p és 0-based i disposicions és llista de 8 seqüències)
+    match = disposicions[p]
+    difs = sum(a != b for a, b in zip(seed_matches, match))
+
+    # Penalització creixent amb les diferències del patró casa/fora
+    cost += (1 + difs) ** w_dif_sorteig
     return cost
 
 
@@ -189,36 +210,23 @@ def add_dummies(df_cat, repartiment):
             'Nom Lliga': nom_lliga,
             'Núm. sorteig': np.nan,
             'Entitat': 'Dummy',
-            'Nivell': 'Dummy'
+            'Nivell': 'Dummy',
+            'Id': f'DUMMY-{k+1}'
         }
     return df_cat.reset_index(drop=True), falta
 
 
-def build_cost_matrix(df_cat, entity_costs, repartiment, w_dif_sorteig=5, fase=primera_fase):
+def build_cost_matrix(df_cat, entity_costs, equips_to_num_sorteig, repartiment, w_dif_sorteig=5, fase=primera_fase):
     """
     Matriu de costos (equips x slots) amb criteris:
     - proximitat al número de sorteig
     """
-
+    #print ("equips_to_num_sorteig:", equips_to_num_sorteig)
     slots = build_slots(repartiment) # Llista de (grup, posició)
     n_e = len(df_cat)   # Nombre d'equips
     n_s = len(slots)    # Nombre de slots (ha de ser igual a grups x 8)
     C = np.zeros((n_e, n_s), dtype=float)
 
-    '''
-    def normalize_seed(x):
-        if pd.isna(x):
-            return np.nan
-        s = str(x).strip().lower()
-        if s in ("casa", "fora"):
-            return s  # mantén el text per a cost_calc
-        if s in ("", "indiferent", "nan"):
-            return np.nan
-        return parse_int(x, default=np.nan)
-
-    # dins build_cost_matrix (abans de crear 'seeds'):
-    seeds = df_cat['Núm. sorteig'].apply(normalize_seed).tolist()
-    '''
     # Es crea una llista amb el número de sorteig de cada equip. Segueix l'ordre de df_cat
     seeds = df_cat['Núm. sorteig'].apply(
         lambda x: str(x).strip() if str(x).strip().lower() in ["fora", "casa"] else parse_int(x, default=np.nan)
@@ -243,6 +251,7 @@ def build_cost_matrix(df_cat, entity_costs, repartiment, w_dif_sorteig=5, fase=p
     
     for i, seed in enumerate(seeds):
         # i numera els equips.
+        equip_id = df_cat.iloc[i]['Id']
         # Obtenim l'entitat de l'equip
         entitat = entitats[i]
 
@@ -257,7 +266,7 @@ def build_cost_matrix(df_cat, entity_costs, repartiment, w_dif_sorteig=5, fase=p
             # j númera els slots, combinacions úniques (grup, posició)
             cost = 0.
 
-            cost = cost_calc(seed, g, p, disposicions, fase, w_dif_sorteig=w_dif_sorteig)
+            cost = cost_calc(equip_id, seed, g, p, disposicions, equips_to_num_sorteig, fase, w_dif_sorteig=w_dif_sorteig)
 
             C[i, j] = cost * factor_entitat
 
@@ -283,7 +292,7 @@ def level_entropy(nivells):
         for j, n2 in enumerate(nums):
             if j > i and n1 != n2:
                 if abs(n1 - n2) > 3:
-                    entropia += 3**(abs(n1 - n2))
+                    entropia += 4**(abs(n1 - n2))
                 #entropia += 3**(abs(n1 - n2))
     return entropia
 
@@ -461,7 +470,8 @@ def normalize_seed_value(x):
 
 
 # --- Afegir penalització per mala distribució de dummies ---
-def homogeneitzar_costs(df_cat, groups, C, entity_costs, entitats_casa_fora,slots,
+def homogeneitzar_costs(df_cat, groups, C, entity_costs, entitats_casa_fora, slots,
+                               equips_to_num_sorteig=None,
                                fase=primera_fase,
                                w_dif_sorteig=5,
                                lambda_entropia=1.0,
@@ -513,8 +523,9 @@ def homogeneitzar_costs(df_cat, groups, C, entity_costs, entitats_casa_fora,slot
         raw = df_cat.loc[i_equ]['Núm. sorteig']
         # Normalització del seed: "casa"/"fora" o enter, sinó NaN
         seed = normalize_seed_value(raw)
+        equip_id = df_cat.loc[i_equ]['Id']
 
-        base = cost_calc(seed, g, p, disposicions, fase, w_dif_sorteig)
+        base = cost_calc(equip_id, seed, g, p, disposicions, equips_to_num_sorteig, fase, w_dif_sorteig)
         fact = entitat_factor[df_cat.iloc[i_equ]['Entitat']]
         return base * fact
 
@@ -551,8 +562,8 @@ def homogeneitzar_costs(df_cat, groups, C, entity_costs, entitats_casa_fora,slot
             return
         target = set(entities)
         seeds = df_cat['Núm. sorteig'].apply(
-        lambda x: str(x).strip() if str(x).strip().lower() in ["fora", "casa"] else parse_int(x, default=np.nan)
-    ).tolist()
+            lambda x: str(x).strip() if str(x).strip().lower() in ["fora", "casa"] else parse_int(x, default=np.nan)
+        ).tolist()
         for i in range(len(df_cat)):
             ent = df_cat.iloc[i]['Entitat']
             if ent not in target:
@@ -560,7 +571,8 @@ def homogeneitzar_costs(df_cat, groups, C, entity_costs, entitats_casa_fora,slot
             seed = seeds[i]
             fact = entitat_factor[ent]
             for j, (g, p) in enumerate(slots):
-                base = cost_calc(seed, g, p, disposicions, fase, w_dif_sorteig)
+                equip_id = df_cat.loc[i]['Id']
+                base = cost_calc(equip_id, seed, g, p, disposicions, equips_to_num_sorteig, fase, w_dif_sorteig)
                 C[i, j] = base * fact
 
     grups_ids_ordenats = sorted(groups.keys())
@@ -571,9 +583,9 @@ def homogeneitzar_costs(df_cat, groups, C, entity_costs, entitats_casa_fora,slot
                 
                 # INTER-GRUP
                 if same_pos_only:
-                    parelles = [(p, p) for p in (groups[g1].keys() & groups[g2].keys())]
+                    parelles = [(p, p) for p in sorted(groups[g1].keys() & groups[g2].keys())]
                 else:
-                    parelles = [(p1, p2) for p1 in groups[g1].keys() for p2 in groups[g2].keys()]
+                    parelles = [(p1, p2) for p1 in sorted(groups[g1].keys()) for p2 in sorted(groups[g2].keys())]
 
                 for p1, p2 in parelles:
                     e1 = groups[g1][p1]
@@ -583,8 +595,8 @@ def homogeneitzar_costs(df_cat, groups, C, entity_costs, entitats_casa_fora,slot
 
                     ent1 = df_cat.iloc[e1]['Entitat']
                     ent2 = df_cat.iloc[e2]['Entitat']
-                    ents_g1_rest = [df_cat.iloc[idx]['Entitat'] for pos, idx in groups[g1].items() if pos != p1]
-                    ents_g2_rest = [df_cat.iloc[idx]['Entitat'] for pos, idx in groups[g2].items() if pos != p2]
+                    ents_g1_rest = [df_cat.iloc[idx]['Entitat'] for pos, idx in sorted(groups[g1].items()) if pos != p1]
+                    ents_g2_rest = [df_cat.iloc[idx]['Entitat'] for pos, idx in sorted(groups[g2].items()) if pos != p2]
 
                     # Si algun equip pertany a entitats_casa_fora, només es permet swap si mantenen el mateix número (posició)
                     if (ent1 in entitats_casa_fora or ent2 in entitats_casa_fora) and p1 != p2:
@@ -743,8 +755,8 @@ def homogeneitzar_nivell(df_cat, groups, max_iters=100):
                         # Comprova que el swap no genera conflicte d'entitat
                         ent1 = df_cat.iloc[i1]['Entitat']
                         ent2 = df_cat.iloc[i2]['Entitat']
-                        ents1 = [df_cat.iloc[i]['Entitat'] for _, i in items1 if i != i1] + [ent2]
-                        ents2 = [df_cat.iloc[i]['Entitat'] for _, i in items2 if i != i2] + [ent1]
+                        ents1 = [df_cat.iloc[i]['Entitat'] for _, i in sorted(items1) if i != i1] + [ent2]
+                        ents2 = [df_cat.iloc[i]['Entitat'] for _, i in sorted(items2) if i != i2] + [ent1]
                         if len(ents1) != len(set(ents1)) or len(ents2) != len(set(ents2)):
                             continue
                         # Calcula entropia abans i després
@@ -807,12 +819,13 @@ def stable_slot_for_entity(entity_name: str, home_slots) -> int:
 
 # ---------- FUNCIÓ PRINCIPAL ----------
 
-def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=None, entitats_casa=None, entitats_fora=None, weights=None):
+def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=None, equips_to_num_sorteig=None, weights=None):
     """
     df_categoria ha de tenir com a mínim:
       - 'Nom', 'Nom Lliga', 'Núm. sorteig'
       - i opcionalment 'Entitat' (si no, es deriva de 'Nom')
     """
+
     df_cat = df_categoria.copy().reset_index(drop=True)  
     if 'Entitat' not in df_cat.columns:
         df_cat['Entitat'] = df_cat['Nom'].apply(obtenir_entitat)
@@ -829,7 +842,7 @@ def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=N
 
     if weights is None:
         weights = dict(w_seed_group=5, w_seed_pos=1)
-    C, slots, entity_costs = build_cost_matrix(df_cat, entity_costs=entity_costs, repartiment=repartiment, w_dif_sorteig=weights.get('w_dif_sorteig', np.log2(27)) )
+    C, slots, entity_costs = build_cost_matrix(df_cat, entity_costs=entity_costs, equips_to_num_sorteig=equips_to_num_sorteig, repartiment=repartiment, w_dif_sorteig=weights.get('w_dif_sorteig', np.log2(27)) )
     #C_aug, bye_info = augment_with_byes_demanda(C, slots, repartiment, mega_penalty=1e9, epsilon=1e-3)
 
     # resolució hongaresa
@@ -865,101 +878,68 @@ def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=N
     groups = build_groups_from_assignment(df_cat, slots, col_ind)
     
     # Un cop resolts els conflictes, tractem els casos casa/fora. Aquí hem d'assignar
-    # un numero de sorteig de "casa" a les entitats que ho hagin demanat, sempre el mateix.
-    contraris = {1:5, 2:6, 3:7, 4:8, 5:1, 6:2, 7:3, 8:4}
-
-    if entitats_casa:
-
-        # Per cada entitat de la llista d'entitats_casa
-        for entitat in entitats_casa.keys():
-
-            slot_casa = entitats_casa[entitat]
-            # Assignem aquest slot a cada equip de l'entitat que ha demanat "casa"
-            for g, pos_dict in groups.items():
-                for p, i_equ in pos_dict.items():
-                    ent = df_cat.iloc[i_equ]['Entitat']
-                    if ent == entitat:
-                        raw = df_cat.iloc[i_equ]['Núm. sorteig']
-                        if str(raw).strip().lower() == "casa":
-                            # Si l'equip ha demanat "casa", li assignem el slot de casa
-                            if (p + 1) != slot_casa:
-                                # Cal fer swap amb qui tingui aquest slot
-                                target_pos = None
-                                for p2, i_equ2 in pos_dict.items():
-                                    if (p2 + 1) == slot_casa:
-                                        target_pos = p2
-                                        break
-                                if target_pos is not None:
-                                    # Fem swap dins del mateix grup
-                                    groups[g][p], groups[g][target_pos] = groups[g][target_pos], groups[g][p]
-
-                        # Si l'equip ha demanat "fora", li assignem un slot de fora
-                        elif str(raw).strip().lower() == "fora":
-                            # Si l'equip ha demanat "fora", li assignem el slot contrari
-                            contrari_slot = contraris[slot_casa]
-                            if (p + 1) != contrari_slot:
-                                # Cal fer swap amb qui tingui aquest slot
-                                target_pos = None
-                                for p2, i_equ2 in pos_dict.items():
-                                    if (p2 + 1) == contrari_slot:
-                                        target_pos = p2
-                                        break
-                                if target_pos is not None:
-                                    # Fem swap dins del mateix grup
-                                    groups[g][p], groups[g][target_pos] = groups[g][target_pos], groups[g][p]
-
-    if entitats_fora:
-        for entitat in entitats_fora.keys():
-            slot_fora = entitats_fora[entitat]
-            # Si l'equip està també a entitats_casa, ignorem aquesta assignació
-            if entitat in entitats_casa:
-                continue
-
-            contrari_slot = contraris[slot_fora]
-            # Assignem aquest slot a cada equip de l'entitat que ha demanat "fora"
-            for g, pos_dict in groups.items():
-                for p, i_equ in pos_dict.items():
-                    ent = df_cat.iloc[i_equ]['Entitat']
-                    if ent == entitat:
-                        raw = df_cat.iloc[i_equ]['Núm. sorteig']
-                        if str(raw).strip().lower() == "fora":
-                            # Si l'equip ha demanat "fora", li assignem el slot de fora
-                            if (p + 1) != slot_fora:
-                                # Cal fer swap amb qui tingui aquest slot
-                                target_pos = None
-                                for p2, i_equ2 in pos_dict.items():
-                                    if (p2 + 1) == slot_fora:
-                                        target_pos = p2
-                                        break
-                                if target_pos is not None:
-                                    # Fem swap dins del mateix grup
-                                    groups[g][p], groups[g][target_pos] = groups[g][target_pos], groups[g][p]
-
-                        elif str(raw).strip().lower() == "casa":
-                            # Si l'equip ha demanat "casa", li assignem el slot contrari
-                            if (p + 1) != contrari_slot:
-                                # Cal fer swap amb qui tingui aquest slot
-                                target_pos = None
-                                for p2, i_equ2 in pos_dict.items():
-                                    if (p2 + 1) == contrari_slot:
-                                        target_pos = p2
-                                        break
-                                if target_pos is not None:
-                                    # Fem swap dins del mateix grup
-                                    groups[g][p], groups[g][target_pos] = groups[g][target_pos], groups[g][p]
-    
-    # Actualitzem els cost de les entitats segons l'assignació final
-    entitats_casa_fora = set()
-    if entitats_casa:
-        entitats_casa_fora |= set(entitats_casa.keys() if isinstance(entitats_casa, dict) else entitats_casa)
-    if entitats_fora:
-        entitats_casa_fora |= set(entitats_fora.keys() if isinstance(entitats_fora, dict) else entitats_fora)
-
+    # Enforç per-equip: si tenim mapping equips_to_num_sorteig, imposa el número a cada equip (swap dins del grup)
+    '''    
+    if equips_to_num_sorteig:
+        for g, pos_dict in groups.items():
+            # Fes diverses passades per estabilitzar
+            for _ in range(3):
+                changed = False
+                for p, i_equ in list(pos_dict.items()):
+                    nom_equip = df_cat.iloc[i_equ]['Nom']
+                    desitjat = equips_to_num_sorteig.get(nom_equip)
+                    if not desitjat:
+                        continue  # aquest equip no té número preassignat
+                    target_pos = desitjat - 1  # posició 0-based
+                    if target_pos == p:
+                        continue
+                    if target_pos in groups[g]:
+                        # Intercanvi dins del mateix grup
+                        i_equ2 = groups[g][target_pos]
+                        groups[g][target_pos], groups[g][p] = i_equ, i_equ2
+                        changed = True
+                if not changed:
+                    break    # Actualitzem els cost de les entitats segons l'assignació final
+    '''    
+# Entitats amb equips que tenen número preassignat (casa/fora): restringeix swaps
+    if equips_to_num_sorteig:
+        ids_pref = set(equips_to_num_sorteig.keys())
+        entitats_casa_fora = set(
+            df_cat.loc[df_cat['Id'].isin(ids_pref), 'Entitat'].dropna().astype(str)
+        )
+        entitats_casa_fora.discard('Dummy')
+    else:
+        entitats_casa_fora = set()
+ 
     groups = homogeneitzar_nivell(df_cat, groups)
     entity_costs = actualitzar_costos_entitat(entity_costs, df_cat, C, row_ind, col_ind)
-    groups, _ = homogeneitzar_costs(df_cat, groups, C, entity_costs, entitats_casa_fora, slots, w_dif_sorteig=5, lambda_entropia=1.0, max_iters=3)
+    groups, _ = homogeneitzar_costs(
+        df_cat, groups, C, entity_costs, entitats_casa_fora, slots,
+        equips_to_num_sorteig=equips_to_num_sorteig,
+        w_dif_sorteig=5, lambda_entropia=1.0, max_iters=3
+    )
     entity_costs = actualitzar_costos_entitat(entity_costs, df_cat, C, row_ind, col_ind)
-
+    '''
+    # Enforç final: garanteix que cada equip amb mapping estigui al número desitjat dins el seu grup
+    if equips_to_num_sorteig:
+        for g, pos_dict in groups.items():
+            for _ in range(2):  # unes poques passades són suficients
+                changed = False
+                for p, i_equ in list(pos_dict.items()):
+                    nom_equip = df_cat.iloc[i_equ]['Nom']
+                    desitjat = equips_to_num_sorteig.get(nom_equip)
+                    if not desitjat:
+                        continue
+                    tp = desitjat - 1
+                    if tp == p:
+                        continue
+                    if tp in groups[g]:
+                        i_equ2 = groups[g][tp]
+                        groups[g][tp], groups[g][p] = i_equ, i_equ2
+                        changed = True
+                if not changed:
+                    break
+    '''
     
     nivell_map = {"Nivell A": 1, "Nivell B": 2, "Nivell C": 3, "Nivell D": 4, "Nivell E": 5}
     grup_ordre_nivell = {}
@@ -979,24 +959,38 @@ def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=N
         for pos in sorted(pos_dict.keys()):
             i = pos_dict[pos]
             r = df_cat.iloc[i]
+            equip = r['Nom']
 
             # Comprovem jornades diferents
             raw = r['Núm. sorteig']
             seed = normalize_seed_value(raw)
-            # Disposició sol·licitada
-            try:
-                seed_int = int(seed)
-            except Exception:
-                diferencies_jornades[i] = []
-                continue
+# Determina el número de referència per calcular diferències:
+            # - si seed és 'casa'/'fora' → usa el número preassignat a l'equip (equips_to_num_sorteig)
+            # - si seed és enter 1..8 → usa aquest número
+            # - altrament → None (no es calculen diferències)
+            seed_num = None
+            if isinstance(seed, str) and seed in ("casa", "fora"):
+                if equips_to_num_sorteig:
+                    id_equip = r['Id']
+                    seed_num = equips_to_num_sorteig.get(id_equip)
+            else:
+                try:
+                    seed_int = int(seed)
+                    if 1 <= seed_int <= 8:
+                        seed_num = seed_int
+                except Exception:
+                    seed_num = None
+
+            # Construeix patrons casa/fora per al número de referència i per al slot assignat
             seed_matches = []
-            for jornada in primera_fase:
-                for partit in jornada:
-                    if partit[0] == seed_int:
-                        seed_matches.append("casa")
-                    if partit[1] == seed_int:
-                        seed_matches.append("fora")
-            # Disposició assignada
+            if seed_num is not None:
+                for jornada in primera_fase:
+                    for partit in jornada:
+                        if partit[0] == seed_num:
+                            seed_matches.append("casa")
+                        if partit[1] == seed_num:
+                            seed_matches.append("fora")
+
             slot_matches = []
             for jornada in primera_fase:
                 for partit in jornada:
@@ -1004,10 +998,10 @@ def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=N
                         slot_matches.append("casa")
                     if partit[1] == (pos + 1):
                         slot_matches.append("fora")
-            # Jornades on no coincideix
-            dif_jornades = [j+1 for j, (a, b) in enumerate(zip(seed_matches, slot_matches)) if a != b]
-            diferencies_jornades[i] = dif_jornades
 
+            # Jornades on no coincideix (si no hi ha seed_num, queda llista buida)
+            dif_jornades = [j + 1 for j, (a, b) in enumerate(zip(seed_matches, slot_matches)) if a != b]
+            diferencies_jornades[i] = dif_jornades
 
     for g, pos_dict in sorted(groups.items()):
         for pos in range(8):
@@ -1017,6 +1011,7 @@ def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=N
                 assign.append({
                     'Nom Lliga': r['Nom Lliga'],
                     'Grup': f"G{g+1}",
+                    'Id': r.get('Id', ''),
                     'Nom': r['Nom'],
                     'Entitat': r['Entitat'],
                     'Nivell': r['Nivell'],
@@ -1031,6 +1026,7 @@ def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=N
                 assign.append({
                     'Nom Lliga': '',
                     'Grup': f"G{g+1}",
+                    'Id': '',
                     'Nom': '',
                     'Entitat': '',
                     'Nivell': '',
@@ -1077,6 +1073,16 @@ def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=N
                 continue
 
             s = str(sorteig_esperat).strip().lower()
+            # Si tenim mapping per equip (per Id), valida contra mapping i evita confusions amb conjunts estàtics
+            if equips_to_num_sorteig:
+                id_equip = df_cat.iloc[i_equ]['Id']
+                exp = equips_to_num_sorteig.get(id_equip)
+                if exp is not None:
+                    if (pos + 1) != exp:
+                        nom_equip = df_cat.iloc[i_equ]['Nom']
+                        print(f"AVÍS: L'equip '{nom_equip}' (grup G{g+1}) segons mapping global esperava {exp}, però té {pos+1}")
+                        sorteig_incorrecte = True
+                    continue  # no facis més validacions genèriques
             # Cas especial "Fora"
             if s == "fora":
                 if (pos + 1) in {5, 4, 3, 2}:
@@ -1104,12 +1110,12 @@ def assignar_grups_hungares(df_categoria, max_grup=8, min_grup=6, entity_costs=N
                 print(f"AVÍS: L'equip '{df_cat.iloc[i_equ]['Nom']}' (grup G{g+1}) té un número de sorteig invàlid: {sorteig_esperat}")
                 sorteig_incorrecte = True
 
-    if not conflicte_entitat and not sorteig_incorrecte:
+    '''if not conflicte_entitat and not sorteig_incorrecte:
         print("VALIDACIÓ: Assignació correcta. No hi ha conflictes d'entitat ni errors de sorteig.")
     if conflicte_entitat:
         print("VALIDACIÓ: S'han detectat conflictes d'entitat.")
     if sorteig_incorrecte:
-        print("VALIDACIÓ: S'han detectat errors de sorteig.")
+        print("VALIDACIÓ: S'han detectat errors de sorteig.")'''
         
 
     return res, entity_costs, {

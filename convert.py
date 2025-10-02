@@ -14,7 +14,8 @@ def xlsx_to_csv(xlsx_path):
         print(f"Archivo convertido: {csv_path}")
     except Exception as e:
         print(f"Error al convertir el archivo: {e}")
+    return csv_path
 
 if __name__ == "__main__":
-    path = "./csv/LlistatEquips.xlsx"
+    path = "./csv/LlistatGlobal.xlsx"
     xlsx_to_csv(path)
