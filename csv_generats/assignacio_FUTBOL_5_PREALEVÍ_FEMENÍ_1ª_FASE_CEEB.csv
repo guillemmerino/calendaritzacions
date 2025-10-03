@@ -6,4 +6,4 @@ FUTBOL 5 PREALEVÍ FEMENÍ 1ª FASE CEEB,G1,DUMMY-2,Dummy 2,Dummy,Dummy,,,4,[]
 FUTBOL 5 PREALEVÍ FEMENÍ 1ª FASE CEEB,G1,04552E3BC3,"CE Vincit-Provençalenc ""A""",CE Vincit-Provençalenc,Nivell C,Divendres,Fora,5,[]
 FUTBOL 5 PREALEVÍ FEMENÍ 1ª FASE CEEB,G1,DUMMY-3,Dummy 3,Dummy,Dummy,,,6,[]
 FUTBOL 5 PREALEVÍ FEMENÍ 1ª FASE CEEB,G1,FE16F5CE37,"Escola Grevol ""A""",Escola Grevol,Nivell C,Dissabte,7,7,[]
-FUTBOL 5 PREALEVÍ FEMENÍ 1ª FASE CEEB,G1,1A4387DFA3,"Col·legi Padre Damian Sagrados Corazones ""A""",Col·legi Padre Damian Sagrados Corazones,Nivell C,Divendres,Casa,8,"[6, 7]"
+FUTBOL 5 PREALEVÍ FEMENÍ 1ª FASE CEEB,G1,1A4387DFA3,"Col·legi Padre Damian Sagrados Corazones ""A""",Col·legi Padre Damian Sagrados Corazones,Nivell C,Divendres,Casa,8,"[(6, 'Casa', 'Dummy 2'), (7, 'Fora', 'Manyanet Sant Andreu')]"

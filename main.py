@@ -48,6 +48,118 @@ def obtenir_entitat(nom):
         # Elimina l'espai i una sola lletra majúscula al final (ex: "Club Volei X A" -> "Club Volei X")
         return re.sub(r'\s+((["\']{1,2}).+?\2|[A-Za-zÀ-ÿ]+)$', '', nom)
 
+def _format_diffs_excel(diffs) -> str:
+    """
+    Converteix una llista de diferències de jornades a text multi-línia per Excel.
+    Accepta formats:
+      - [(jornada, casa_fora, rival), ...]
+      - [jornada1, jornada2, ...]
+      - str ja formatat
+    Retorna "—" si no hi ha diferències.
+    """
+    if diffs is None:
+        return "—"
+    if isinstance(diffs, str):
+        s = diffs.strip()
+        return s if s else "—"
+    if not isinstance(diffs, (list, tuple)):
+        try:
+            return str(diffs)
+        except Exception:
+            return "—"
+    if len(diffs) == 0:
+        return "—"
+    lines = []
+    for item in diffs:
+        try:
+            if isinstance(item, (list, tuple)) and len(item) >= 3:
+                j = item[0]
+                side = item[1]
+                opp = item[2]
+                try:
+                    j_int = int(j)
+                    j_txt = f"J{j_int}"
+                except Exception:
+                    j_txt = str(j)
+                side_s = str(side).strip().lower()
+                if side_s in ("c", "casa", "home", "local"):
+                    side_txt = "Casa"
+                elif side_s in ("f", "fora", "away", "visitant"):
+                    side_txt = "Fora"
+                else:
+                    side_txt = str(side)
+                lines.append(f"• {j_txt}: {side_txt} vs {opp}")
+            else:
+                try:
+                    j_int = int(item)
+                    lines.append(f"• J{j_int}")
+                except Exception:
+                    lines.append(f"• {item}")
+        except Exception:
+            lines.append(f"• {item}")
+    return "\n".join(lines)
+
+def analitzar_equitabilitat_costos(entity_costs, all_results):
+    """
+    Analitza si els costos s'estan repartint equitativament entre entitats.
+    Retorna un diccionari amb estadístiques d'equitabilitat.
+    """
+    if not entity_costs:
+        return {"status": "No hi ha costos d'entitat per analitzar"}
+    
+    # Filtrem les entitats reals (no Dummy)
+    costos_reals = {e: c for e, c in entity_costs.items() if e != 'Dummy'}
+    
+    if not costos_reals:
+        return {"status": "No hi ha entitats reals amb costos"}
+    
+    # Estadístiques bàsiques
+    costos = list(costos_reals.values())
+    entitats = list(costos_reals.keys())
+    
+    mitjana_cost = sum(costos) / len(costos)
+    cost_min = min(costos)
+    cost_max = max(costos)
+    desviacio = np.std(costos)
+    
+    # Comptatge d'equips per entitat per normalitzar
+    equips_per_entitat = {}
+    for _, row in all_results.iterrows():
+        entitat = row.get('Entitat', '')
+        if entitat and entitat != 'Dummy':
+            equips_per_entitat[entitat] = equips_per_entitat.get(entitat, 0) + 1
+    
+    # Cost per equip (normalitzat)
+    cost_per_equip = {}
+    for entitat in costos_reals:
+        num_equips = equips_per_entitat.get(entitat, 1)
+        cost_per_equip[entitat] = costos_reals[entitat] / num_equips
+    
+    # Identifica entitats perjudicades
+    threshold_alt = mitjana_cost + desviacio
+    threshold_molt_alt = mitjana_cost + 2 * desviacio
+    
+    entitats_perjudicades = [e for e, c in costos_reals.items() if c > threshold_alt]
+    entitats_molt_perjudicades = [e for e, c in costos_reals.items() if c > threshold_molt_alt]
+    
+    # Ràtio de desigualtat (màx/mín)
+    ratio_desigualtat = cost_max / cost_min if cost_min > 0 else float('inf')
+    
+    return {
+        "status": "Analitzat",
+        "num_entitats": len(costos_reals),
+        "cost_mitjà": mitjana_cost,
+        "cost_min": cost_min,
+        "cost_max": cost_max,
+        "desviació_estàndard": desviacio,
+        "ràtio_desigualtat": ratio_desigualtat,
+        "entitats_perjudicades": entitats_perjudicades,
+        "entitats_molt_perjudicades": entitats_molt_perjudicades,
+        "costos_detallats": costos_reals,
+        "cost_per_equip": cost_per_equip,
+        "equips_per_entitat": equips_per_entitat
+    }
+
 def parse_int(x, default=np.nan):
     try:
         if pd.isna(x):
@@ -85,40 +197,6 @@ def crear_grups_equilibrats(num_equips, max_grup=8):
         num_grups += 1
 
 
-def entitats_que_volen_casa(df):
-    """
-    Retorna { entitat: [llista_equips_que_han_demanat_casa] }.
-    Accepta 'Casa' (case-insensitive)
-    """
-    dfx = df.copy()
-    if 'Entitat' not in dfx.columns:
-        # opcional: deduir entitat a partir del nom si cal
-        dfx['Entitat'] = dfx['Nom'].apply(obtenir_entitat)
-
-    s = dfx['Núm. sorteig']
-    mask = s.astype(str).str.strip().str.lower().eq('casa')
-    return (dfx[mask]
-            .groupby('Entitat')['Nom']
-            .apply(list)
-            .to_dict())
-
-def entitats_que_volen_fora(df):
-    """
-    Retorna { entitat: [llista_equips_que_han_demanat_fora] }.
-    Accepta 'Fora' (case-insensitive)
-    """
-    dfx = df.copy()
-    if 'Entitat' not in dfx.columns:
-        # opcional: deduir entitat a partir del nom si cal
-        dfx['Entitat'] = dfx['Nom'].apply(obtenir_entitat)
-
-    s = dfx['Núm. sorteig']
-    mask = s.astype(str).str.strip().str.lower().eq('fora')
-    return (dfx[mask]
-            .groupby('Entitat')['Nom']
-            .apply(list)
-            .to_dict())
-
 
 def obtenir_entitat(nom):
     # Deducció senzilla del nom de l'entitat (es pot adaptar segons el format real)
@@ -131,21 +209,16 @@ def _normalize_entity_name(name: str) -> str:
     s = " ".join(s.split())  # col·lapsa espais múltiples
     return s
 
-def stable_slot_for_entity(entity_name: str, home_slots) -> int:
-    key = _normalize_entity_name(entity_name)
-    # hash estable independent de la sessió de Python
-    h = hashlib.sha1(key.encode('utf-8')).hexdigest()
-    num = int(h, 16)
-    return home_slots[num % len(home_slots)]
-
 def processar_dades_2(df, nom_fitxer="dades.csv"):
     entity_costs = {}
     # Assegurem columnes mínimes
-    cols_ok = {'Nom', 'Nom Lliga', 'Núm. sorteig'}
+    cols_ok = {'Nom', 'Entitat', 'Nom Lliga', 'Nivell', 'Núm. sorteig', 'Dia partit'}
     missing = cols_ok - set(df.columns)
+    print("Columnes del DataFrame:", df.columns)
     if missing:
+        print(f"Falten columnes necessàries: {missing}")
         raise ValueError(f"Falten columnes necessàries: {missing}")
-    
+
     df = df.copy()
     
     if 'Entitat' not in df.columns:
@@ -229,7 +302,7 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
         entitats_links.items(),
         key=lambda item: (-len(item[1]), str(item[0]).casefold())
     )}
-    print ("Entitats i nombre d'enllaços:", {k: len(v) for k, v in entitats_links.items()})
+    #print ("Entitats i nombre d'enllaços:", {k: len(v) for k, v in entitats_links.items()})
 
     # Orientem cada dupla com (CASA, FORA) segons preferits_casa/fora
     # 1↔5, 6↔2, 7↔3, 8↔4 per garantir que 'casa' cau a {8,6,7,1} i 'fora' a {5,4,3,2}
@@ -274,7 +347,7 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
         # Guardem l'ordre de preferència per aquesta entitat
         preferencies_entitat[entitat] = entitat_count
 
-    print ("Preferències d'entitats:", {k: v for k, v in preferencies_entitat.items()})
+    #print ("Preferències d'entitats:", {k: v for k, v in preferencies_entitat.items()})
 
     # Ara, tornem a recorrer tots els equips de cada entitat que han demanat casa/fora i, per cada
     # equip que ha demanat casa/fora, assignem el número de sorteig segons la preferència de l'entitat
@@ -491,8 +564,7 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
                     continue
                 if assigned != expected:
                     diffs = r.get("Diferències jornades")
-                    # Normalitza a text per Excel
-                    diffs_txt = ", ".join(map(str, diffs)) if isinstance(diffs, (list, tuple)) else str(diffs or "")
+                    diffs_txt = _format_diffs_excel(diffs)
                     rows.append([r["Entitat"], r["Nom Lliga"], r.get("Nom"), req, expected, assigned, diffs_txt])
         if rows:
             df_val_casa_fora = pd.DataFrame(rows, columns=["Entitat", "Categoria", "Equip", "Petició", "Esperat", "Assignat", "Diferències jornades"])
@@ -512,9 +584,11 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
             except Exception:
                 continue
             if desired != assigned:
-                num_rows.append([r["Entitat"], r["Nom Lliga"], r.get("Nom"), desired, assigned])
+                diffs = r.get("Diferències jornades")
+                diffs_txt = _format_diffs_excel(diffs)
+                num_rows.append([r["Entitat"], r["Nom Lliga"], r.get("Nom"), desired, assigned, diffs_txt])
         if num_rows:
-            df_val_num_mismatch = pd.DataFrame(num_rows, columns=["Entitat", "Categoria", "Equip", "Sol·licitat", "Assignat"]).sort_values(["Categoria", "Entitat", "Equip"]).reset_index(drop=True)
+            df_val_num_mismatch = pd.DataFrame(num_rows, columns=["Entitat", "Categoria", "Equip", "Sol·licitat", "Assignat", "Diferències jornades"]).sort_values(["Categoria", "Entitat", "Equip"]).reset_index(drop=True)
 
         # 3b) Resum per entitat: números CASA/FORA assignats (segons dupla triada) + recompte de peticions
         ent_rows = []
@@ -531,8 +605,8 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
                 "Entitat": entitat,
                 "Casa": casa_num,
                 "Fora": fora_num,
-                "#Equips CASA": n_casa,
-                "#Equips FORA": n_fora,
+                "Número Equips CASA": n_casa,
+                "Número Equips FORA": n_fora,
             })
         if ent_rows:
             df_entitat_slots = pd.DataFrame(ent_rows).sort_values("Entitat").reset_index(drop=True)
@@ -613,12 +687,33 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
             6: workbook.add_format({"bg_color": "#E2EFDA"}),
             7: workbook.add_format({"bg_color": "#FFF2CC"}),
             8: workbook.add_format({"bg_color": "#FCE4D6"}),
+            9: workbook.add_format({"bg_color": "#E7E6E6"}),
+            10: workbook.add_format({"bg_color": "#DDEBF7"}),
+            11: workbook.add_format({"bg_color": "#E2EFDA"}),
+            12: workbook.add_format({"bg_color": "#FFF2CC"}),
+            13: workbook.add_format({"bg_color": "#FCE4D6"}),
+            14: workbook.add_format({"bg_color": "#E7E6E6"}),
+            15: workbook.add_format({"bg_color": "#DDEBF7"}),
         }
+        
+        # Formats per incidències amb colors per entitat
+        fmt_incident_colors = {
+            1: workbook.add_format({"bg_color": "#E2EFDA", "border": 1}),  # verd clar
+            2: workbook.add_format({"bg_color": "#FFF2CC", "border": 1}),  # groc clar
+            3: workbook.add_format({"bg_color": "#FCE4D6", "border": 1}),  # salmó
+            4: workbook.add_format({"bg_color": "#E7E6E6", "border": 1}),  # gris clar
+            5: workbook.add_format({"bg_color": "#DDEBF7", "border": 1}),  # blau clar
+        }
+        # Format per separador d'entitats
+        fmt_separator = workbook.add_format({"bg_color": "#2F75B5", "border": 2, "border_color": "#1F4E78"})
 
         # --- FULL "Resum" opcional amb info agregada ---
         used_sheet_names = set()
         if info_totals:
+            # Construeix el DataFrame d'info i elimina camps no tabulars (com 'fairness')
             df_info = pd.DataFrame(info_totals)
+            if 'fairness' in df_info.columns:
+                df_info = df_info.drop(columns=['fairness'])
             df_info.to_excel(writer, sheet_name="Resum", index=False)
             ws_info = writer.sheets["Resum"]
             used_sheet_names.add("Resum")
@@ -668,39 +763,211 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
                 ws_info.write(start_row+1, 0, "Cap entitat amb assignació CASA/FORA.")
                 start_row += 3
 
-            
+            ''' # --- Equitabilitat (FAIRNESS) ---
+            # 1) Resum per categoria
+            fair_summary_rows = []
+            fair_entity_rows = []
+            def _to_float(x):
+                try:
+                    if x is None:
+                        return None
+                    return float(x)
+                except Exception:
+                    return None
+            for item in info_totals:
+                cat = item.get('categoria', '')
+                fair = item.get('fairness', {}) or {}
+                ratio = _to_float(fair.get('ratio_per_equip'))
+                std = _to_float(fair.get('std_per_equip'))
+                # Format amigable de ràtio
+                if ratio is None:
+                    ratio_disp = ""
+                else:
+                    try:
+                        ratio_disp = "∞" if not np.isfinite(ratio) else round(ratio, 2)
+                    except Exception:
+                        ratio_disp = round(ratio, 2)
+                std_disp = "" if std is None else round(std, 2)
+                fair_summary_rows.append({
+                    'Categoria': cat,
+                    'Ràtio (max/min)': ratio_disp,
+                    'Desv. estàndard': std_disp,
+                })
+                # 2) Cost per equip per entitat (taula llarga)
+                cpe = fair.get('cost_per_equip', {}) or {}
+                for ent, val in cpe.items():
+                    v = _to_float(val)
+                    fair_entity_rows.append({
+                        'Categoria': cat,
+                        'Entitat': ent,
+                        'Cost per equip': ("" if v is None else round(v, 2))
+                    })
 
-        # --- FULL "Incidències" amb totes les incidències ---
-        used_sheet_names.add("Incidències")
-        ws_inc = workbook.add_worksheet("Incidències")
-        writer.sheets["Incidències"] = ws_inc
-        row_ptr = 0
-        ws_inc.write(row_ptr, 0, "INCIDÈNCIES", fmt_title)
-        row_ptr += 2
-        # CASA/FORA incoherències
-        ws_inc.write(row_ptr, 0, "CASA/FORA – incoherències", fmt_header)
+            df_fair_summary = pd.DataFrame(fair_summary_rows)
+            if not df_fair_summary.empty:
+                ws_info.write(start_row, 0, "Equitabilitat – Resum per categoria", fmt_header)
+                df_fair_summary.to_excel(writer, sheet_name="Resum", index=False, startrow=start_row+1)
+                # ajust columnes
+                start_row = start_row + 2 + len(df_fair_summary)
+
+            df_fair_entity = pd.DataFrame(fair_entity_rows)
+            if not df_fair_entity.empty:
+                start_row += 1
+                ws_info.write(start_row, 0, "Equitabilitat – Cost per equip per entitat", fmt_header)
+                df_fair_entity = df_fair_entity.sort_values(['Categoria','Entitat'])
+                df_fair_entity.to_excel(writer, sheet_name="Resum", index=False, startrow=start_row+1)
+                start_row = start_row + 2 + len(df_fair_entity)
+            
+            
+            '''
+        # --- FULL "Incidències" amb totes les incidències agrupades per entitat ---
+        # Combinem totes les incidències en una sola taula agrupada per entitat
+        all_incidents = []
+        
+        # Recopilem totes les incidències organitzades per entitat
+        incidents_by_entity = {}
+        
+        # Processem incidències CASA/FORA per entitat
         if not df_val_casa_fora.empty:
-            df_val_casa_fora.to_excel(writer, sheet_name="Incidències", index=False, startrow=row_ptr+1)
-            row_ptr += 2 + len(df_val_casa_fora)
-        else:
-            ws_inc.write(row_ptr+1, 0, "Cap incoherència detectada.")
-            row_ptr += 3
-        # Núm. sorteig explícit diferents
-        ws_inc.write(row_ptr, 0, "Núm. sorteig explícit no complert", fmt_header)
+            for _, r in df_val_casa_fora.iterrows():
+                entitat = r["Entitat"]
+                if entitat not in incidents_by_entity:
+                    incidents_by_entity[entitat] = []
+                incidents_by_entity[entitat].append({
+                    "Entitat": entitat,
+                    "Categoria": r["Categoria"],
+                    "Equip": r["Equip"],
+                    "Tipus Incidència": "CASA/FORA incoherència",
+                    "Detall": f"Petició: {r['Petició']}, Esperat: {r['Esperat']}, Assignat: {r['Assignat']}",
+                    "Info Addicional": _format_diffs_excel(r.get('Diferències jornades')),
+                    "Grup": ""
+                })
+        
+        # Processem incidències de números explícits per entitat
         if not df_val_num_mismatch.empty:
-            df_val_num_mismatch.to_excel(writer, sheet_name="Incidències", index=False, startrow=row_ptr+1)
-            row_ptr += 2 + len(df_val_num_mismatch)
-        else:
-            ws_inc.write(row_ptr+1, 0, "Cap incidència detectada.")
-            row_ptr += 3
-        # Nivells dispars (≥3)
-        ws_inc.write(row_ptr, 0, "Nivells dispars (≥3)", fmt_header)
+            for _, r in df_val_num_mismatch.iterrows():
+                entitat = r["Entitat"]
+                if entitat not in incidents_by_entity:
+                    incidents_by_entity[entitat] = []
+                incidents_by_entity[entitat].append({
+                    "Entitat": entitat,
+                    "Categoria": r["Categoria"],
+                    "Equip": r["Equip"],
+                    "Tipus Incidència": "Núm. sorteig no complert",
+                    "Detall": f"Sol·licitat: {r['Sol·licitat']}, Assignat: {r['Assignat']}",
+                    "Info Addicional": _format_diffs_excel(r.get('Diferències jornades')),
+                    "Grup": ""
+                })   
+
+        # Construïm la llista final: primer per entitat (ordenada), després nivells dispars
+        all_incidents = []
+        for entitat in sorted(incidents_by_entity.keys(), key=lambda s: str(s).casefold()):
+            # Dins de cada entitat, ordenem per categoria i equip
+            entity_incidents = sorted(
+                incidents_by_entity[entitat],
+                key=lambda x: (str(x["Categoria"]).casefold(), str(x["Equip"]).casefold())
+            )
+            all_incidents.extend(entity_incidents)
+
+        # Afegim incidències de nivells dispars
         if not df_val_level_spread.empty:
-            df_val_level_spread.to_excel(writer, sheet_name="Incidències", index=False, startrow=row_ptr+1)
-            row_ptr += 2 + len(df_val_level_spread)
+            for _, r in df_val_level_spread.iterrows():
+                all_incidents.append({
+                    "Entitat": "— Grup amb nivells dispars —",
+                    "Categoria": r["Categoria"],
+                    "Equip": "",
+                    "Tipus Incidència": "Nivells dispars (≥3)",
+                    "Detall": f"Nivells: {r['Nivells']}, Diferència: {r['Dif']} (Min: {r['Min']}, Max: {r['Max']})",
+                    "Info Addicional": "",
+                    "Grup": r["Grup"]
+                })
+        
+        # Creem el DataFrame consolidat i l'ordenem per entitat i categoria
+        if all_incidents:
+            df_incidents = pd.DataFrame(all_incidents)
+            df_incidents = df_incidents.sort_values(["Entitat", "Categoria", "Equip"]).reset_index(drop=True)
+            
+            used_sheet_names.add("Incidències")
+            ws_inc = workbook.add_worksheet("Incidències")
+            writer.sheets["Incidències"] = ws_inc
+            row_ptr = 0
+            ws_inc.write(row_ptr, 0, "INCIDÈNCIES AGRUPADES PER ENTITAT", fmt_title)
+            row_ptr += 2
+            
+            # Escrivim les capçaleres manualment
+            for col_idx, col_name in enumerate(df_incidents.columns):
+                ws_inc.write(row_ptr, col_idx, col_name, fmt_header)
+                # Ajustem amplades de columna
+                if col_name == "Entitat":
+                    ws_inc.set_column(col_idx, col_idx, 25)
+                elif col_name == "Categoria":
+                    ws_inc.set_column(col_idx, col_idx, 20)
+                elif col_name == "Equip":
+                    ws_inc.set_column(col_idx, col_idx, 30)
+                elif col_name == "Tipus Incidència":
+                    ws_inc.set_column(col_idx, col_idx, 20)
+                elif col_name == "Detall":
+                    ws_inc.set_column(col_idx, col_idx, 40)
+                elif col_name == "Info Addicional":
+                    ws_inc.set_column(col_idx, col_idx, 40)
+                else:
+                    ws_inc.set_column(col_idx, col_idx, 15)
+            
+            row_ptr += 1  # Salta la fila de capçaleres
+            
+            # Escrivim les incidències fila per fila amb colors per entitat
+            entitats_uniques = df_incidents['Entitat'].unique()
+            color_mapping = {}
+            for idx, entitat in enumerate(entitats_uniques):
+                color_mapping[entitat] = (idx % len(fmt_incident_colors)) + 1
+            
+            current_entitat = None
+            for index, row in df_incidents.iterrows():
+                entitat = row['Entitat']
+                
+                # Afegeix separador visual quan canvia l'entitat
+                if current_entitat is not None and current_entitat != entitat:
+                    for col_idx in range(len(df_incidents.columns)):
+                        ws_inc.write(row_ptr, col_idx, "", fmt_separator)
+                    row_ptr += 1
+                
+                current_entitat = entitat
+                color_idx = color_mapping[entitat]
+                fmt_color = fmt_incident_colors[color_idx]
+                
+                # Escriu cada cel·la de la fila amb el format colorejat
+                for col_idx, col_name in enumerate(df_incidents.columns):
+                    value = row[col_name]
+                    needs_wrap = False
+                    if col_name in ["Detall", "Info Addicional"]:
+                        # Fes wrap si és llarg o si conté salts de línia
+                        s = str(value)
+                        needs_wrap = (len(s) > 50) or ("\n" in s)
+                    if needs_wrap:
+                        fmt_color_wrap = workbook.add_format({
+                            "bg_color": fmt_incident_colors[color_idx].bg_color,
+                            "border": 1,
+                            "text_wrap": True
+                        })
+                        ws_inc.write(row_ptr, col_idx, value, fmt_color_wrap)
+                    else:
+                        ws_inc.write(row_ptr, col_idx, value, fmt_color)
+                
+                row_ptr += 1
+            
+            # Afegim filtres i congelació (ajustem per la nova estructura)
+            header_row = 2  # Capçaleres estan a la fila 2 (0-indexed)
+            last_row = row_ptr - 1  # Última fila amb dades
+            ws_inc.autofilter(header_row, 0, last_row, len(df_incidents.columns) - 1)
+            ws_inc.freeze_panes(header_row + 1, 0)
+            
         else:
-            ws_inc.write(row_ptr+1, 0, "Cap grup amb diferència de nivell ≥ 3.")
-            row_ptr += 3
+            # Si no hi ha incidències
+            used_sheet_names.add("Incidències")
+            ws_inc = workbook.add_worksheet("Incidències")
+            writer.sheets["Incidències"] = ws_inc
+            ws_inc.write(0, 0, "INCIDÈNCIES", fmt_title)
+            ws_inc.write(2, 0, "Cap incidència detectada.", fmt_default)
 
         # --- FULL per categoria ---
         for res_df_cat in resultats_totals:
@@ -722,6 +989,9 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
 
             # copia i ordena per “Grup” i dins de cada grup per “Núm. sorteig assignat” si existeixen
             df = res_df_cat.drop(columns=[c for c in ["_Categoria"] if c in res_df_cat.columns] + ["Id"]).copy()
+            # Format amigable per a "Diferències jornades" (multi-línia per Excel)
+            if "Diferències jornades" in df.columns:
+                df["Diferències jornades"] = df["Diferències jornades"].apply(_format_diffs_excel)
             if "Grup" in df.columns and "Núm. sorteig assignat" in df.columns:
                 df.sort_values(["Grup", "Núm. sorteig assignat"], inplace=True, kind="stable")
             elif "Grup" in df.columns:
@@ -761,6 +1031,12 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
                 if any(isinstance(x, str) and len(x) > 40 for x in df[col_name].head(100)):
                     ws.set_column(col_idx, col_idx, None, fmt_wrap)
 
+            # Assegura wrap específic per a la columna "Diferències jornades"
+            if "Diferències jornades" in df.columns:
+                diffs_col_idx = df.columns.get_loc("Diferències jornades")
+                # Amplada més gran i wrap activat per mostrar punts de bala en múltiples línies
+                ws.set_column(diffs_col_idx, diffs_col_idx, 40, fmt_wrap)
+
             # condicional per color de “Grup” (si existeix) – pinta la fila sencera per cada grup
             if n_rows > 0 and "Grup" in df.columns:
                 grup_col_idx = df.columns.get_loc("Grup")
@@ -787,6 +1063,8 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
                     )
                     # Truc: la fórmula s’avalua per cada fila; per assegurar que miri la fila correcta,
                     # xlsxwriter substitueix el número de fila segons la cel·la d’avaluació.
+
+        
 
             # línies de taula (vora fina) a totes les cel·les
             for r in range(start_row + 1, start_row + 1 + n_rows):
@@ -852,6 +1130,49 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
         if not any_conflicts:
             print("VALIDACIÓ (ENTITAT): OK – cap grup té duplicats d'entitat.")
 
+        # 2.5) Anàlisi d'equitabilitat de costos entre entitats
+        print("\n--- ANÀLISI D'EQUITABILITAT DE COSTOS ---")
+        equitabilitat = analitzar_equitabilitat_costos(entity_costs, all_results)
+        
+        if equitabilitat["status"] == "Analitzat":
+            print(f"Nombre d'entitats: {equitabilitat['num_entitats']}")
+            print(f"Cost mitjà per entitat: {equitabilitat['cost_mitjà']:.2f}")
+            print(f"Rang de costos: {equitabilitat['cost_min']:.2f} - {equitabilitat['cost_max']:.2f}")
+            print(f"Desviació estàndard: {equitabilitat['desviació_estàndard']:.2f}")
+            print(f"Ràtio de desigualtat (màx/mín): {equitabilitat['ràtio_desigualtat']:.2f}")
+            
+            if equitabilitat['entitats_molt_perjudicades']:
+                print(f"\n⚠️  ENTITATS MOLT PERJUDICADES (>2σ): {equitabilitat['entitats_molt_perjudicades']}")
+            
+            if equitabilitat['entitats_perjudicades']:
+                print(f"\n⚠️  ENTITATS PERJUDICADES (>1σ): {equitabilitat['entitats_perjudicades']}")
+            
+            # Mostra els 5 costos més alts i més baixos
+            costos_ordenats = sorted(equitabilitat['costos_detallats'].items(), key=lambda x: x[1], reverse=True)
+            print("\nTOP 5 ENTITATS AMB MÉS COST:")
+            for i, (entitat, cost) in enumerate(costos_ordenats[:5]):
+                num_equips = equitabilitat['equips_per_entitat'].get(entitat, 1)
+                cost_per_equip = equitabilitat['cost_per_equip'].get(entitat, 0)
+                print(f"  {i+1}. {entitat}: {cost:.2f} total ({num_equips} equips, {cost_per_equip:.2f}/equip)")
+            
+            print("\nTOP 5 ENTITATS AMB MENYS COST:")
+            for i, (entitat, cost) in enumerate(costos_ordenats[-5:][::-1]):
+                num_equips = equitabilitat['equips_per_entitat'].get(entitat, 1)
+                cost_per_equip = equitabilitat['cost_per_equip'].get(entitat, 0)
+                print(f"  {i+1}. {entitat}: {cost:.2f} total ({num_equips} equips, {cost_per_equip:.2f}/equip)")
+            
+            # Avaluació de l'equitabilitat
+            if equitabilitat['ràtio_desigualtat'] > 5.0:
+                print("\n🚨 AVALUACIÓ: Distribució MOLT DESIGUAL de costos (ràtio > 5.0)")
+            elif equitabilitat['ràtio_desigualtat'] > 3.0:
+                print("\n⚠️  AVALUACIÓ: Distribució DESIGUAL de costos (ràtio > 3.0)")
+            elif equitabilitat['ràtio_desigualtat'] > 2.0:
+                print("\n⚡ AVALUACIÓ: Distribució MODERADAMENT DESIGUAL (ràtio > 2.0)")
+            else:
+                print("\n✅ AVALUACIÓ: Distribució RELATIVAMENT EQUITATIVA de costos")
+        else:
+            print(f"No es pot analitzar equitabilitat: {equitabilitat['status']}")
+
         # 3) Coherència CASA/FORA per equips segons mapping global (equips_to_num_sorteig)
         incoherencies = []
         if 'equip_to_num_sorteig' in locals():
@@ -897,6 +1218,7 @@ def processar_dades_2(df, nom_fitxer="dades.csv"):
                         return None
             ch = (m[1] if isinstance(m, (list, tuple)) else m.group(1)).upper()
             return {"A": 1, "B": 2, "C": 3, "D": 4, "E": 5}.get(ch)
+        
         for (cat, grup), df_grp in all_results.groupby(["Nom Lliga", "Grup"]):
             df_grp = df_grp[df_grp.apply(_is_real_team, axis=1)]
             if df_grp.empty:
